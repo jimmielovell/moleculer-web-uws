@@ -14,7 +14,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/jimmielovell/moleculer-web-uws.git"
+    "url": "git+https://github.com/jimmielovell/moleculer-web-uws.git"
   },
   "author": "Jimmie Lovell",
   "license": "MIT",
@@ -24,10 +24,18 @@
   "dependencies": {
     "etag": "^1.8.1",
     "is-stream": "^2.0.0",
-    "uWebSockets.js": "uNetworking/uWebSockets.js#v19.2.0",
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v19.2.0",
     "zlib": "^1.0.5"
   },
   "engines": {
     "node": ">= 10.x.x"
+  },
+  "bugs": {
+    "url": "https://github.com/jimmielovell/moleculer-web-uws/issues"
+  },
+  "homepage": "https://github.com/jimmielovell/moleculer-web-uws#readme",
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
   }
 }
