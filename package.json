@@ -1,0 +1,33 @@
+{
+  "name": "moleculer-web-uws",
+  "version": "0.0.1",
+  "description": "The `moleculer-web-uws` is a fast API gateway service for Moleculer based on µWebSockets.js server. Use it to publish your services over HTTP.",
+  "main": "index.js",
+  "keywords": [
+    "api gateway",
+    "http server",
+    "microservices",
+    "microservice",
+    "moleculer",
+    "uwebsockets.js",
+    "websockets"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jimmielovell/moleculer-web-uws.git"
+  },
+  "author": "Jimmie Lovell",
+  "license": "MIT",
+  "peerDependencies": {
+    "moleculer": "^0.14.13"
+  },
+  "dependencies": {
+    "etag": "^1.8.1",
+    "is-stream": "^2.0.0",
+    "uWebSockets.js": "uNetworking/uWebSockets.js#v19.2.0",
+    "zlib": "^1.0.5"
+  },
+  "engines": {
+    "node": ">= 10.x.x"
+  }
+}
