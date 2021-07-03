@@ -1,5 +1,9 @@
 'use strict';
 
+// Based on: https://github.com/marvinhagemeister/fast-path-to-regexp
+
+const { addSlashes, normalizePath } = require('./utils');
+
 const CHARS = {
   ASTERIKS: 42,
   COLON: 58,
@@ -12,7 +16,7 @@ const escape = {
 };
 
 function parse(input) {
-  input = normalize(input);
+  input = normalizePath(addSlashes(input));
   let pattern = '^';
   let url = '';
 
@@ -50,10 +54,6 @@ function parse(input) {
   };
 }
 
-function normalize(url) {
-  return ('/' + url + '/').replace(/\/{2,}/g, '/');
-}
-
 function PathToRegExp(path) {
   const {regexp, keys, url} = parse(path);
   this.regexp = regexp;
@@ -62,7 +62,7 @@ function PathToRegExp(path) {
 }
 
 PathToRegExp.prototype.match = function(url) {
-  url = normalize(url);
+  url = normalizePath(addSlashes(url));
   const matches = this.regexp.exec(url);
 
   if (matches === null) return null;

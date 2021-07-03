@@ -1,5 +1,7 @@
 'use strict'
 
+// Based on: https://github.com/jshttp/fresh
+
 /**
  * RegExp to check for no-cache token in Cache-Control.
  * @private

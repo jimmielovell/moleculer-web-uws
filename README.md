@@ -38,8 +38,11 @@ let broker = new ServiceBroker({ logger: console });
 broker.createService({
     name: "test",
     actions: {
-        hello() {
-            return "Hello API Gateway!"
+        hello: {
+            rest: 'GET /hello',
+            handler(ctx) {
+                return "Hello API Gateway!"
+            }
         }
     }
 });

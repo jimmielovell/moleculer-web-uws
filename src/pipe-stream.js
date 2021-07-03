@@ -8,10 +8,8 @@ const pipeStream = (res, readStream, totalSize) => {
 
   readStream
   .on('data', (chunk) => {
-    if (res.done) {
-      readStream.destroy();
-      return
-    }
+    if (res.done)
+      return readStream.destroy();
 
     const ab = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
     const lastOffset = res.getWriteOffset();
@@ -20,29 +18,24 @@ const pipeStream = (res, readStream, totalSize) => {
     if (done) readStream.destroy();
     if (ok) return
 
-    // backpressure found!
-    readStream.pause();
+    readStream.pause();// backpressure found!
     // save the current chunk & its offset
     res.ab = ab;
     res.abOffset = lastOffset;
 
-    // set up a drainage
     res.onWritable(offset => {
-      const [ok, hasResponded] = res.tryEnd(res.ab.slice(offset - res.abOffset), totalSize);
+      const [ok, done] = res.tryEnd(res.ab.slice(offset - res.abOffset), totalSize);
 
-      if (hasResponded) readStream.destroy()
+      if (done) readStream.destroy()
       else if (ok) readStream.resume();
 
       return ok
     })
   })
   .on('error', () => {
-    if (!res.done) {
-      res.statusCode = 500
-      res.end();
-    }
-
-    readStream.destroy()
+    res.statusCode = 500
+    res.end();
+    readStream.destroy();
   });
 }
 
