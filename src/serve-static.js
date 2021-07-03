@@ -78,7 +78,6 @@ class StaticServer {
 }
 
 const ROOT_PATH = getRootPath();
-// const filesToCache = ['sw.js', 'favicon.ico', 'manifest.json'];
 
 function serveStatic(staticDirs, opts) {
   staticDirs = Array.isArray(staticDirs)? staticDirs : [staticDirs];
