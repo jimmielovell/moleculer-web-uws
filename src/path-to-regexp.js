@@ -1,40 +1,37 @@
 'use strict';
 
-// Based on: https://github.com/marvinhagemeister/fast-path-to-regexp
-
+const { BadRequestError } = require('./errors');
 const { addSlashes, normalizePath } = require('./utils');
 
-const CHARS = {
-  ASTERIKS: 42,
-  COLON: 58,
-  SLASH: 47,
+const charCodes = {
+  '*': 0x2a,
+  ':': 0x3a,
+  '/': 0x2f,
 }
-
 const escape = {
-  [CHARS.ASTERIKS]: '(.*)',
-  [CHARS.SLASH]: '\\/',
+  [charCodes['*']]: '(.*)',
+  [charCodes['/']]: '\\/',
 };
 
 function parse(input) {
   input = normalizePath(addSlashes(input));
   let pattern = '^';
   let url = '';
-
-  const keys = [];
   let param = -1;
+  const keys = [];
   const len = input.length;
 
   for (let i = 0; i < len; i++) {
     const char = input.charCodeAt(i);
 
-    if (char === CHARS.COLON)
+    if (char === charCodes[':'])// Colon
       param = i + 1;
     else if (param !== -1) {
-      const isDelimiter = char === CHARS.SLASH;
+      const isDelimiter = char === charCodes['/']; // Slash
       const isEnd = i === len - 1;
       if (isDelimiter || isEnd) {
         keys.push(input.slice(param, isEnd && !isDelimiter ? len : i));
-        pattern += '([\\w-_+.]+)' + (isDelimiter ? escape[char] : '');
+        pattern += '([\\w-_+.]+?)' + (isDelimiter ? escape[char] : '');
         url += '*/';
         param = -1;
       }
@@ -44,7 +41,6 @@ function parse(input) {
       url += input[i];
     }
   }
-
   pattern += '$';
 
   return {
@@ -63,17 +59,27 @@ function PathToRegExp(path) {
 
 PathToRegExp.prototype.match = function(url) {
   url = normalizePath(addSlashes(url));
+  try {
+    url = decodeURIComponent(url);
+  } catch (err) {
+    throw new BadRequestError();
+  }
+
   const matches = this.regexp.exec(url);
+  const params = {};
 
   if (matches === null) return null;
 
-  const params = {};
-
   for (let i = 1; i < matches.length; i++) {
     const value = matches[i];
+    const _value = parseInt(value, 10);
 
-    if (value)
-      params[this.keys[i - 1]] = value;
+    if (value) {
+      if (isNaN(_value))
+        params[this.keys[i - 1]] = value;
+      else
+        params[this.keys[i - 1]] = _value;
+    }
   }
 
   return params;

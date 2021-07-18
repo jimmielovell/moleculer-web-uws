@@ -23,6 +23,8 @@
   },
   "dependencies": {
     "etag": "^1.8.1",
+    "mime-types": "^2.1.31",
+    "minimatch": "^3.0.4",
     "uWebSockets.js": "github:uNetworking/uWebSockets.js#v19.2.0",
     "zlib": "^1.0.5"
   },

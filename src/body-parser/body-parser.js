@@ -35,7 +35,6 @@ function typeParser(parser) {
 
       res.onData((chunk, isLast) => {
         const curBuf = Buffer.from(chunk);
-
         buffer = buffer ? Buffer.concat([buffer, curBuf]) : isLast ? curBuf : Buffer.concat([curBuf]);
 
         if (isLast) {
