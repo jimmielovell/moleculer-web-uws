@@ -47,9 +47,6 @@ broker.createService({
     }
 });
 
-// Load API Gateway
-broker.createService(ApiService);
-
 // Start server
 broker.start();
 ```

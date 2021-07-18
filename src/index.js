@@ -1,11 +1,12 @@
 const uws = require('uWebSockets.js');
 const { MoleculerError, MoleculerServerError, MoleculerClientError, ServiceNotFoundError } = require('moleculer').Errors;
-const { ServiceUnavailableError, NotFoundError, ForbiddenError, RateLimitExceeded, UnAuthorizedError } = require('./errors');
+const { ServiceUnavailableError, NotFoundError, ForbiddenError, RateLimitExceeded, UnAuthorizedError } = Errors = require('./errors');
 const { autoParser, bodyParser } = require('./body-parser/body-parser');
 const multipart = require('./body-parser/multipart');
-const serveStatic = require('./serve-static');
+const StaticServer = require('./static-server');
 const PathToRegExp = require('./path-to-regexp');
-const { isObject, isFunction, isString, isNumber, normalizePath, generateETag, isFresh, isReadableStream } = require('./utils');
+const pipeStream = require('./pipe-stream');
+const { isObject, isFunction, isString, isNumber, normalizePath, generateETag, isReadableStream } = require('./utils');
 
 function getServiceFullname(svc) {
 	if (svc.version != null && svc.settings.$noVersionPrefix !== true)
@@ -84,9 +85,12 @@ function getServiceFullname(svc) {
 					throw endpoint;
 				}
 				req.$endpoint = endpoint;
-				req.$ctx = ctx;// Set pointers to Context
 
-				return this.routeHandler(req, res);
+				const requestID = req.headers['x-correlation-id'] || req.headers['x-request-id'];
+				if (requestID)
+					res.setHeader('X-Request-Id', ctx.requestID);
+
+				return this.routeHandler(ctx, req, res);
 			}
 		},
 	},
@@ -119,9 +123,8 @@ function getServiceFullname(svc) {
 			});
 		},
 
-		async routeHandler(req, res) {
+		async routeHandler(ctx, req, res) {
 			const route = req.$route;
-			const ctx = req.$ctx;
 			let params = {};
 
 			// CORS headers
@@ -175,15 +178,16 @@ function getServiceFullname(svc) {
 				}
 			}
 
+			return await this.callAction(ctx, req, res, params);
+		},
+
+		async callAction(ctx, req, res, params) {
+			const route = req.$route;
+			const actionName = route.action;
+
 			// onBeforeCall handling
 			if (this.settings.onBeforeCall)
 				await this.settings.onBeforeCall.call(this, ctx, req, res);
-
-			return await this.callAction(route.action, req, res, params);
-		},
-
-		async callAction(actionName, req, res, params) {
-			const ctx = req.$ctx;
 
 			// Logging params
 			if (this.settings.logging) {
@@ -193,17 +197,22 @@ function getServiceFullname(svc) {
 					this.logger[this.settings.logRequestParams]('Params:', params);
 			}
 
-			// Pass the `req` & `res` vars to ctx.params.
-			if (this.settings.passReqResToParams) {
-				params.$req = req;
-				params.$res = res;
+			const opts = route.callOptions ? { ...route.callOptions } : {};
+
+			// Pass the `req` & `res` vars to ctx.meta.
+			if (route.passReqRes) {
+				if (opts.meta) {
+					opts.meta.$req = req;
+					opts.meta.$res = res;
+				} else
+					opts.meta = { $req: req, $res: res }
 			}
 
-			const opts = this.settings.callOptions ? { ...this.settings.callOptions } : {};
+
 			if (params && params.$params) {
 				// Transfer URL parameters via meta in case of stream
-				if (!opts.meta) opts.meta = { $params: params.$params };
-				else opts.meta.$params = params.$params;
+				if (opts.meta) opts.meta.$params = params.$params;
+				else opts.meta = { $params: params.$params };
 			}
 
 			let data = await ctx.call(req.$endpoint, params, opts);
@@ -215,7 +224,7 @@ function getServiceFullname(svc) {
 			if (this.settings.onAfterCall)
 				data = await this.settings.onAfterCall.call(this, ctx, req, res, data);
 
-			this.sendResponse(req, res, data);
+			this.sendResponse(ctx, req, res, data);
 
 			return true;
 		},
@@ -236,7 +245,8 @@ function getServiceFullname(svc) {
 				if (processedServices.has(serviceName))
 					continue;
 
-				this.logger.info('Registering', serviceName, 'service routes');
+				if (this.settings.logRouteRegistration && this.settings.logRouteRegistration in this.logger)
+					this.logger[this.settings.logRouteRegistration]('Registering', serviceName, 'service routes');
 
 				let servicePath = service.settings.rest && service.settings.rest !== ''
 					? service.settings.rest
@@ -263,9 +273,6 @@ function getServiceFullname(svc) {
 			}
 
 			try {
-				if (this.settings.static)
-					this.registerStaticRoute();
-
 				this.registerPreflightRoute();
 				this.register404Route();
 				this.listenServer();
@@ -284,6 +291,17 @@ function getServiceFullname(svc) {
 			else if (isObject(rest)) {
 				methodBpPath = rest.path || '';
 				methodBpPath = methodBpPath.split(' ');
+				route.passReqRes = rest.passReqRes;
+				if (rest.authenticate) {
+					if (!isFunction(this.authenticate))
+						this.logger.error('Define \'authenticate\' method in the API Gateway to enable authentication.');
+					route.authenticate = true;
+				}
+				if (rest.authorize) {
+					if (!isFunction(this.authorize))
+						this.logger.error('Define \'authorize\' method in the API Gateway to enable authentication.');
+					route.authorize = true;
+				}
 			} else
 				return this.logger.error('RouteRegistrationError! The provided rest definition in', action.name, 'is invalid.');
 
@@ -299,7 +317,8 @@ function getServiceFullname(svc) {
 					path = methodBpPath[1];
 					break;
 				case 1:
-					method = methodBpPath[0];
+					method = 'GET',
+					path = methodBpPath[0];
 					break;
 				case 0:
 					method = '*';
@@ -316,7 +335,9 @@ function getServiceFullname(svc) {
 				path = servicePath + '/' + path;
 				path = normalizePath(path);
 			}
-			route.path = path;
+
+			// Handle paths such as /test/hello/*/* -> /test/hello/*
+			route.path = path.replace(/(?:\/\*){2,}/g, '/*');
 
 			if (method === '*')
 				method = 'any';
@@ -326,13 +347,13 @@ function getServiceFullname(svc) {
 					method = 'del';
 			}
 
-			if (!['get', 'post', 'del', 'put', 'options', 'head'].includes(method)) {
-				this.logger.error('RouteRegistrationError: Unsurpported method \'', method, '\'!');
-				return;
-			}
+			if (!['get', 'post', 'del', 'put', 'options', 'head'].includes(method))
+				return this.logger.error('RouteRegistrationError: Unsurpported method \'', method, '\'!');
+
 			route.method = method;
 			route.action = action.name;
 
+			// Resolve the body parser at build time
 			if (rest.multipart || bodyParserType === 'multipart') {
 				const opts = Object.assign({}, this.settings.multipartOptions, rest.multipart);
 				route.multipart = opts;
@@ -341,17 +362,6 @@ function getServiceFullname(svc) {
 				route.bodyParser = bodyParser[bodyParserType];
 			else
 				route.bodyParser = autoParser;
-
-			if (rest.authenticate) {
-				if (!isFunction(this.authenticate))
-					this.logger.error('Define \'authenticate\' method in the API Gateway to enable authentication.');
-				route.authenticate = true;
-			}
-			if (rest.authorize) {
-				if (!isFunction(this.authorize))
-					this.logger.error('Define \'authorize\' method in the API Gateway to enable authentication.');
-				route.authorize = true;
-			}
 
 			this.registerRestRoute(route);
 		},
@@ -382,21 +392,15 @@ function getServiceFullname(svc) {
 						method: _req.getMethod().toUpperCase(),
 						query: _req.getQuery(),
 						$route: route,
+						remoteAddress: res.getRemoteAddressAsText(),
 						headers
 					}
 					this.logRequest(req);
-
 					res = this.patchHttpRes(res, req);
-
-					const requestID = req.headers['x-correlation-id'] || req.headers['x-request-id'];
-					if (requestID)
-							res.setHeader('X-Request-Id', ctx.requestID);
 
 					try {
 						await this.actions.rest({ req, res });
-
-						if (!res.done)
-							this.sendError(req, res, err);
+						// if (!res.done) throw new Error();
 					} catch (err) {
 						// Clientside error logging
 						if (this.settings.log4XXResponses && 400 < err.code && err.code < 500)
@@ -408,14 +412,7 @@ function getServiceFullname(svc) {
 		},
 
 		addRestRoute(route) {
-			let {path, action, method} = route;
-			// Check to see if route is already added
-			// resolve all the middlewares
-				// Find a way in which the mws can mutate the res object
-				// BodyParser
-				// Cors middleware
-				// ...mws
-				//
+			let {path, method} = route;
 
 			if (this._routes[method]) {
 				if (this._routes[method][path])
@@ -441,40 +438,6 @@ function getServiceFullname(svc) {
 				completepath = completepath.slice(0, -1);
 
 			return completepath;
-		},
-
-		registerStaticRoute() {
-			let path = this.settings.static.path
-				? '/' + this.settings.static.path + '/*'
-				: '/*';
-			path = normalizePath(path);
-			this.server = this.server.get(path, (res, _req) => {
-				const $startTime = process.hrtime();
-				const headers = {}
-				_req.forEach((key, value) => headers[key] = value);
-				const req = {
-					$startTime,
-					url: _req.getUrl(),
-					method: _req.getMethod().toUpperCase(),
-					query: _req.getQuery(),
-					headers
-				}
-				this.logRequest(req);
-
-				res = this.patchHttpRes(res, req);
-
-				try {
-					const done = this.serveStatic(req, res);
-					if (!done)
-						this.send404(req, res);
-
-					if (!res.done)
-						throw new Error();
-				} catch (err) {
-					res.statusCode = 500;
-					res.end('Internal Server Error!');
-				}
-			});
 		},
 
 		registerPreflightRoute() {
@@ -518,7 +481,8 @@ function getServiceFullname(svc) {
 				res = this.patchHttpRes(res, req);
 
 				try {
-					this.send404(req, res);
+					this.sendError(req, res, new NotFoundError());
+					if (!res.done) throw new Error();
 				} catch (err) {
 					res.statusCode = 500;
 					res.end('Internal Server Error!');
@@ -527,7 +491,7 @@ function getServiceFullname(svc) {
 		},
 
 		patchHttpRes(res, req) {
-			res.onAborted(() => res.done = true);
+			res.onAborted(() => res.done = true)
 			res.statusCode = 200;
 			res._headers = new Map();
 			res.setHeader = (key, value) => {
@@ -535,13 +499,13 @@ function getServiceFullname(svc) {
 				return res;
 			}
 			res.getHeader = (key) => {
-				return res.headers.get(key);
+				return res._headers.get(key);
 			}
 			res.removeHeader = (key) => {
-				res.headers.delete(key);
+				res._headers.delete(key);
 				return res;
 			}
-			res._end = res.end
+			res._end = res.end;
 			res.end = (body) => {
 				if (res.done) return;
 				res.done = true;
@@ -553,7 +517,6 @@ function getServiceFullname(svc) {
 				// Log the response if configured
 				this.logResponse(req, res.statusCode, body);
 			}
-
 			return res;
 		},
 
@@ -645,13 +608,16 @@ function getServiceFullname(svc) {
 			return JSON.stringify(data);
 		},
 
-		sendResponse(req, res, data) {
-			const ctx = req.$ctx;
-			const route = req.$route;
-
+		sendResponse(ctx, req, res, data) {
 			// Custom status code from ctx.meta
 			if (ctx.meta.$statusCode)
 				res.statusCode = ctx.meta.$statusCode;
+
+			if (ctx.meta.$responseHeaders) {
+				for (let i = 0, keys = Object.keys(ctx.meta.$responseHeaders); i < keys.length; i++) {
+					res.setHeader(keys[i], ctx.meta.$responseHeaders[keys[i]]);
+				}
+			}
 
 			// Redirect
 			if (res.statusCode >= 300 && res.statusCode < 400 && res.statusCode !== 304) {
@@ -662,61 +628,36 @@ function getServiceFullname(svc) {
 					res.setHeader('Location', location);
 			}
 
-			let responseType;
-			// Custom responseType from ctx.meta
-			if (ctx.meta.$responseType)
-				responseType = ctx.meta.$responseType;
-
-			// Custom headers from ctx.meta
-			if (ctx.meta.$responseHeaders) {
-				for (let i = 0, keys = Object.keys(ctx.meta.$responseHeaders); i < keys.length; i++) {
-					res.setHeader(keys[i], ctx.meta.$responseHeaders[keys[i]]);
-				}
-			}
+			if (req.method === 'HEAD')
+				res.cork(() => res.end());
 
 			if (data === null)
 				return res.cork(() => res.end())
 
 			let chunk;
-			// Buffer
-			if (Buffer.isBuffer(data)) {
-				res.setHeader('Content-Type', responseType || 'application/octet-stream');
+			if (Buffer.isBuffer(data)) {// Buffer
+				!res.getHeader('Content-Type') && res.setHeader('Content-Type', 'application/octet-stream');
 				res.setHeader('Content-Length', data.length);
 				chunk = data;
-			}
-			// Buffer from Object
-			else if (isObject(data) && data.type == 'Buffer') {
-				const buf = Buffer.from(data);
-				res.setHeader('Content-Type', responseType || 'application/octet-stream');
-				res.setHeader('Content-Length', buf.length);
-				chunk = buf;
-			}
-			// Stream
-			else if (isReadableStream(data)) {
-				res.setHeader('Content-Type', responseType || 'application/octet-stream');
+			} else if (isReadableStream(data)) {// Stream
+				!res.getHeader('Content-Type') && res.setHeader('Content-Type', 'application/octet-stream');
 				chunk = data;
-			}
-			// Other (stringify or raw text)
-			else {
-				if (!responseType) {
-					res.setHeader('Content-Type', 'application/json; charset=utf-8');
-					chunk = this.encodeJsonResponse(data);
-				} else {
-					res.setHeader('Content-Type', responseType);
-
-					if (isString(data)) chunk = data;
-					else chunk = data.toString();
-				}
+			} else if (isObject(data) || Array.isArray(data)) {
+				!res.getHeader('Content-Type') && res.setHeader('Content-Type', 'application/json; charset=utf-8');
+				chunk = this.encodeJsonResponse(data);
+			} else {// Other (stringify or raw text)
+				!res.getHeader('Content-Type') && res.setHeader('Content-Type', 'text/plain');
+				if (isString(data)) chunk = data;
+				else chunk = data.toString();
 			}
 
-			// Auto generate & add ETag
-			if (this.settings.etag && chunk && !isReadableStream(chunk)) {
-				res.setHeader('ETag', generateETag.call(this, chunk, route.etag));
-
-				// Freshness
-				if (isFresh(req, res))
-					res.statusCode = 304;
-			}
+			// // Auto generate & add ETag
+			// if (this.settings.etag && chunk && !isReadableStream(chunk)) {
+			// 	res.setHeader('ETag', generateETag.call(this, chunk, route.etag));
+			// 	// Freshness
+			// 	if (isFresh(req, res))
+			// 		res.statusCode = 304;
+			// }
 
 			if (res.statusCode === 204 || res.statusCode === 304) {
 				res.removeHeader('Content-Type');
@@ -724,19 +665,21 @@ function getServiceFullname(svc) {
 				res.removeHeader('Transfer-Encoding');
 				res.cork(() => res.end());
 			} else {
-				if (req.method === 'HEAD')
-					res.cork(() => res.end());
-				else {
-					if (isReadableStream(data))
-						pipeStream(res, data, data.byteLength)
-					else
-						res.cork(() => res.end(chunk));
-				}
-			}
-		},
+				if (isReadableStream(data)) {
+					if (typeof(ctx.meta.$byteLength) !== 'number') {
+						res.statusCode = 500;
+						return res.cork(() => res.end(chunk));
+					}
 
-		send404(req, res) {
-			this.sendError(req, res, new NotFoundError());
+					res.writeStatus((res.statusCode)+'');
+					for (let [key, value] of res._headers) {
+						res.writeHeader(key, value);
+					}
+					pipeStream(res, data, ctx.meta.$byteLength);
+					this.logResponse(req, res.statusCode);
+				} else
+					res.cork(() => res.end(chunk));
+			}
 		},
 
 		sendError(req, res, err) {
@@ -745,8 +688,7 @@ function getServiceFullname(svc) {
 
 			if (!err || !(err instanceof Error)) {
 				res.statusCode = 500;
-				res.end('Internal Server Error!');
-				return;
+				return res.end('Internal Server Error!');
 			}
 
 			if (!(err instanceof MoleculerError)) {
@@ -755,12 +697,10 @@ function getServiceFullname(svc) {
 				err.name = e.name;
 			}
 
-			const responseType = 'application/json; charset=utf-8';
 			const statusCode = isNumber(err.code) && (400 < err.code && err.code < 599) ? err.code : 500;
 			res.statusCode = statusCode;
-			// Return with the error as JSON object
-			const {name, message, code, type, data} = err;
-			res.setHeader('Content-Type', responseType);
+			const { name, message, code, type, data } = err;
+			res.setHeader('Content-Type', 'application/json; charset=utf-8');
 			res.end(err ? this.encodeJsonResponse({ name, message, code, type, data }) : 'Internal Server Error!');
 		},
 
@@ -834,15 +774,15 @@ function getServiceFullname(svc) {
 	created() {
 		// Create a new HTTP/HTTPS server instance
 		this.createServer();
-		this.logger.info('API Gateway Server created.');
-
-		// Create static server
-		if (this.settings.static && this.settings.static.enabled) {
-			const opts = this.settings.static;
-			this.serveStatic = serveStatic(opts.folder, opts);
+		// Create static server service
+		if (this.settings.assets) {
+			Object.assign(StaticServer.settings, this.settings.assets)
+			this.broker.createService(StaticServer);
 		}
 
 		this._routes = {};
+
+		this.logger.info('API Gateway Server created.');
 	},
 
 	stopped() {
@@ -852,5 +792,6 @@ function getServiceFullname(svc) {
 		return Promise.resolve();
 	},
 
-	Errors: require("./errors"),
+	Errors,
+	StaticServer
 }

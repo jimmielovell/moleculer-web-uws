@@ -25,16 +25,9 @@ function isStream(obj) {
 }
 
 function isReadableStream(stream) {
-	return isStream(stream) &&
-		stream.readable !== false &&
-		isFunction(stream._read) &&
-		isObject(stream._readableState);
+	return isStream(stream) && stream.readable !== false && isFunction(stream._read) && typeof stream._readableState === 'object';
 }
 
-/**
- * Decode URI encoded param
- * @param {String} param
- */
 function decodeParam(param) {
 	try {
 		return decodeURIComponent(param);
@@ -43,7 +36,6 @@ function decodeParam(param) {
 	}
 }
 
-// Remove slashes '/' from the left & right sides
 function removeTrailingSlashes(s) {
 	if (s[0] === '/')
 		s = s.slice(1);
@@ -52,24 +44,14 @@ function removeTrailingSlashes(s) {
 	return s;
 }
 
-// Add slashes '/' to the left & right sides
 function addSlashes(s) {
 	return (s[0] === '/' ? '' : '/') + s + (s[s.length - 1] === '/' ? '' : '/');
 }
 
-// Normalize URL path (remove multiple slashes //)
 function normalizePath(s) {
 	return s.replace(/\/{2,}/g, '/');
 }
 
-/**
- * Generate ETag from content.
- *
- * @param {any} body
- * @param {Boolean|String|Function?} opt
- *
- * @returns {String}
- */
 function generateETag(body, opt) {
 	if (isFunction(opt))
 		return opt.call(this, body);
@@ -81,34 +63,15 @@ function generateETag(body, opt) {
 	return etag(buf, (opt === true || opt === 'weak') ? { weak: true } : null);
 }
 
-/**
- * Check the data freshness.
- *
- * @param {*} req
- * @param {*} res
- *
- * @returns {Boolean}
- */
-function isFresh(req, res) {
-	if ((res.statusCode >= 200 && res.statusCode < 300) || 304 === res.statusCode)
-		return fresh(req, res);
-
-	return false;
-}
-
 module.exports = {
 	isObject,
 	isFunction,
 	isString,
 	isNumber,
 	isReadableStream,
-
 	removeTrailingSlashes,
 	addSlashes,
 	normalizePath,
-
 	decodeParam,
-
-	generateETag,
-	isFresh
+	generateETag
 };
