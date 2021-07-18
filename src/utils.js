@@ -25,14 +25,7 @@ function isStream(obj) {
 }
 
 function isReadableStream(stream) {
-<<<<<<< HEAD
 	return isStream(stream) && stream.readable !== false && isFunction(stream._read) && typeof stream._readableState === 'object';
-=======
-	return isStream(stream) &&
-		stream.readable !== false &&
-		isFunction(stream._read) &&
-		isObject(stream._readableState);
->>>>>>> main
 }
 
 function decodeParam(param) {
@@ -43,10 +36,6 @@ function decodeParam(param) {
 	}
 }
 
-<<<<<<< HEAD
-=======
-// Remove slashes '/' from the left & right sides
->>>>>>> main
 function removeTrailingSlashes(s) {
 	if (s[0] === '/')
 		s = s.slice(1);
@@ -63,17 +52,6 @@ function normalizePath(s) {
 	return s.replace(/\/{2,}/g, '/');
 }
 
-<<<<<<< HEAD
-=======
-/**
- * Generate ETag from content.
- *
- * @param {any} body
- * @param {Boolean|String|Function?} opt
- *
- * @returns {String}
- */
->>>>>>> main
 function generateETag(body, opt) {
 	if (isFunction(opt))
 		return opt.call(this, body);
@@ -91,19 +69,9 @@ module.exports = {
 	isString,
 	isNumber,
 	isReadableStream,
-<<<<<<< HEAD
-=======
-
->>>>>>> main
 	removeTrailingSlashes,
 	addSlashes,
 	normalizePath,
 	decodeParam,
-<<<<<<< HEAD
 	generateETag
-=======
-
-	generateETag,
-	isFresh
->>>>>>> main
 };
