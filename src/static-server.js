@@ -201,7 +201,12 @@ module.exports = {
   },
 
   created() {
-    const root = path.join(__dirname, '..', this.settings.folder)
-    this.settings.root = path.normalize(path.resolve(root || '.'));
+    if (!this.settings.root) {
+      const cwd = process.cwd();
+      console.log(cwd)
+      this.settings.root = path.join(cwd, this.settings.folder);
+    }
+
+    this.settings.root = path.normalize(path.resolve(this.settings.root || '.'));
   }
 }

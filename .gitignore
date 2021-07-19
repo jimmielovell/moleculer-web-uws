@@ -1,5 +1,5 @@
 .DS_Store
-assets/
+test.js
 node_modules/
 stats.json
 yarn-error.log
