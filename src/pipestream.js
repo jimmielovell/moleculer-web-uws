@@ -35,7 +35,7 @@ function pipeStream(res, readStream, totalSize) {
       });
     }
 
-  }).on('error', (err) => {
+  }).on('error', () => {
     readStream.destroy();
     res.end();
   });

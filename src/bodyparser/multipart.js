@@ -4,7 +4,6 @@ const { getParts } = require('uWebSockets.js');
 const { Readable } = require('stream');
 
 function multipart(req, res, opts = {}) {
-  const partsLimit = Number(opts.parts || 0);
   const fieldsLimit = Number(opts.fields || 0);
   const filesLimit = Number(opts.files || 0);
   const fileSizeLimit = Number(opts.fileSize || 0);
@@ -17,7 +16,6 @@ function multipart(req, res, opts = {}) {
     let fileSizeLimitExceeded = false;
     let filesLimitExceeded = false;
     let fieldsLimitExceeded = false;
-    let partsLimitExceeded = false;
     let numOfFiles = 0;
     let numOfFields = 0;
 
@@ -27,16 +25,13 @@ function multipart(req, res, opts = {}) {
 
       if (isLast) {
         if (!buffer)
-          return reject(new Error('No form data recieved.'));
+          return reject(new Error('No multipart form data recieved!'));
 
         const parts = getParts(buffer, contentType);
         const partsLen = parts.length;
 
-        if (0 < partsLimit && partsLimit > partsLen)
-          partsLimitExceeded = true;
-
         if (!parts)
-          return reject(new Error('Could not parse form data content. Maybe incorrect Content-Type.'));
+          return reject(new Error('Could not parse form data content. Maybe incorrect Content-Type!'));
 
         for (let i = 0; i < partsLen; i++) {
           let { name, data, type, filename } = parts[i];
@@ -47,7 +42,7 @@ function multipart(req, res, opts = {}) {
               fileSizeLimitExceeded = true;
 
             data = Readable.from(Buffer.from(data));
-            files[numOfFiles] = { name, data, type, filename };
+            files[numOfFiles] = { fieldname: name, data, type, filename, size: fileSize };
             numOfFiles++;
           } else {
             try {
@@ -71,8 +66,7 @@ function multipart(req, res, opts = {}) {
           files,
           fileSizeLimitExceeded,
           filesLimitExceeded,
-          fieldsLimitExceeded,
-          partsLimitExceeded
+          fieldsLimitExceeded
         })
       }
     })

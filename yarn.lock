@@ -83,10 +83,15 @@ eventemitter2@^6.4.4:
   resolved "https://registry.yarnpkg.com/eventemitter2/-/eventemitter2-6.4.4.tgz#aa96e8275c4dbeb017a5d0e03780c65612a1202b"
   integrity sha512-HLU3NDY6wARrLCEwyGKRBvuWYyvW6mHYv72SJJAH3iJN3a6eVUvkjFkcxah1bcTgGVBBrFdIopBJPhCQFMLyXw==
 
-fastest-validator@^1.11.0:
+fastest-validator@^1.11.1:
   version "1.11.1"
   resolved "https://registry.yarnpkg.com/fastest-validator/-/fastest-validator-1.11.1.tgz#c0e158046294981834fcb309a6ef4aa70f521297"
   integrity sha512-y0pXBCgGfY3mqbBL9sn2LtAxfJICyOr5cuOnCjyiKg4VoXVmDaLBDwnnj4QC1pSY5B4upln5k8RyLszlLXzXlw==
+
+flake-idgen@^1.4.0:
+  version "1.4.0"
+  resolved "https://registry.yarnpkg.com/flake-idgen/-/flake-idgen-1.4.0.tgz#a89db0f987d83e33b88bf9a8ac1a26d0c0b03b63"
+  integrity sha512-l+dtBcIAwAPqmtDelZAAw0NzKOBosiu/3hAFH69W3n1rH8wkKN1hUp6SaR1tmH/NmzaCUQs1BFKULKVhqGWdMw==
 
 fn-args@^5.0.0:
   version "5.0.0"
@@ -174,15 +179,15 @@ minimatch@^3.0.4:
   dependencies:
     brace-expansion "^1.1.7"
 
-moleculer@^0.14.15:
-  version "0.14.15"
-  resolved "https://registry.yarnpkg.com/moleculer/-/moleculer-0.14.15.tgz#53da8e5ce758aa58b0632cbcd42178021183bd38"
-  integrity sha512-mJOV30VnV/HQhEhRuprPn74GSHapgc9qyM2fEOBLtXtxAGx5uS0KPkfJXICT8Vw7yMjBd56gVNpG2ZU022piEQ==
+moleculer@^0.14.16:
+  version "0.14.16"
+  resolved "https://registry.yarnpkg.com/moleculer/-/moleculer-0.14.16.tgz#0cc20bb00545fe5127154243b0fe63b772d7b598"
+  integrity sha512-MbHMsKh+sEJeu5/ANnjt23bDciDMTuhmh+AYUWMUbEbEBK2axhSEYtb3LK7Mf4WD4tatRHQQ+HdZ+KySo7K4+Q==
   dependencies:
     args "^5.0.1"
     es6-error "^4.1.1"
     eventemitter2 "^6.4.4"
-    fastest-validator "^1.11.0"
+    fastest-validator "^1.11.1"
     fn-args "^5.0.0"
     glob "^7.1.7"
     ipaddr.js "^2.0.1"
@@ -246,8 +251,3 @@ yallist@^4.0.0:
   version "4.0.0"
   resolved "https://registry.yarnpkg.com/yallist/-/yallist-4.0.0.tgz#9bb92790d9c0effec63be73519e11a35019a3a72"
   integrity sha512-3wdGidZyq5PB084XLES5TpOSRA3wjXAlIWMhum2kRcv/41Sn2emQ0dycQW4uZXLejwKvg6EsvbdlVL+FYEct7A==
-
-zlib@^1.0.5:
-  version "1.0.5"
-  resolved "https://registry.yarnpkg.com/zlib/-/zlib-1.0.5.tgz#6e7c972fc371c645a6afb03ab14769def114fcc0"
-  integrity sha1-bnyXL8NxxkWmr7A6sUdp3vEU/MA=
