@@ -1,5 +1,3 @@
-// module.exports = require('./src');
-
 
 'use strict';
 
@@ -43,7 +41,7 @@ broker.createService({
     ws: {
       path: '/*',
       keepAlive: {
-        interval: 1000,
+        interval: 5000,
         ping: new Uint8Array([57]),
         pong: new Uint16Array([65]),
       },

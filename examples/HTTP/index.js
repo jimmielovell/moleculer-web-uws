@@ -1,5 +1,3 @@
-// module.exports = require('./src');
-
 
 'use strict';
 
@@ -8,14 +6,10 @@ let { ServiceBroker } = require('moleculer');
 let broker = new ServiceBroker({ logger: console });
 const ApiGateway = require('./src/index');
 
-/**
- * To define a websocket
- * Define a ws object at the settings object of the API Gateway
- */
 broker.createService({
   name: 'test',
   actions: {
-    draw: {
+    add: {
       ws: {
         publish: true,
         send: false,
@@ -27,6 +21,27 @@ broker.createService({
       handler(ctx) {
         return ctx.params;
       }
+    },
+
+    hello: {
+      rest: 'GET /hello',
+      handler(ctx) {
+        return "Hello World!"
+      }
+    },
+
+    namedParameter: {
+      rest: 'GET /hello/:name',
+      handler(ctx) {
+        return 'Hello ' + ctx.params.name + '!';
+      }
+    },
+
+    jsonBody: {
+      rest: 'POST json /post/json',
+      handler(ctx) {
+        return 'Hello ' + ctx.params.name + '!';
+      }
     }
   },
   methods: {
@@ -36,26 +51,15 @@ broker.createService({
 
 // Create a service
 broker.createService({
-  name: 'apigateway',
+  name: "api",
   mixins: [ApiGateway],
 
   settings: {
-    ws: {
-      path: '/*',
-      keepAlive: {
-        interval: 1000,
-        ping: new Uint8Array([57]),
-        pong: new Uint16Array([65]),
-      },
-
-      open: (socket) => {
-        socket.subscribe("drawing/canvas1");
-      },
-      upgrade: (res, req, context) => {
-
-      },
-      message: async (app, socket, message, isBinary, topic) => {
-        // app.publish("drawing/canvas1", message, true);
+    // Serve static files, this is called as a separate service
+    assets: {
+      etag: true,
+      cache: {
+        '**': 'no-cache'
       }
     },
 

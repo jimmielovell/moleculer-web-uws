@@ -1,12 +1,17 @@
 const uws = require('uWebSockets.js');
 const { MoleculerError, MoleculerServerError, MoleculerClientError, ServiceNotFoundError } = require('moleculer').Errors;
-const { ServiceUnavailableError, NotFoundError, ForbiddenError, RateLimitExceeded, UnAuthorizedError } = Errors = require('./errors');
-const { autoParser, bodyParser } = require('./body-parser/body-parser');
-const multipart = require('./body-parser/multipart');
-const StaticServer = require('./static-server');
-const PathToRegExp = require('./path-to-regexp');
-const pipeStream = require('./pipe-stream');
-const { isObject, isFunction, isString, isNumber, normalizePath, generateETag, isReadableStream } = require('./utils');
+const { ServiceUnavailableError, NotFoundError, ForbiddenError, RateLimitExceeded, UnAuthorizedError, TopicNotFoundError } = Errors = require('./errors');
+const { autoParser, bodyParser } = require('./bodyparser/bodyparser');
+const multipart = require('./bodyparser/multipart');
+const StaticServer = require('./staticserver');
+const ConnectionContext = require('./websocket/ConnectionContext');
+const pipeStream = require('./pipestream');
+const keepAlive = require('./websocket/keepAlive');
+const handleDisconnect = require('./websocket/handleDisconnect');
+const { isObject, isFunction, isString, isNumber, normalizePath, isReadableStream, removeTrailingSlashes } = require('./utils');
+const { StringDecoder } = require('string_decoder');
+
+const decoder = new StringDecoder('utf8');
 
 function getServiceFullname(svc) {
 	if (svc.version != null && svc.settings.$noVersionPrefix !== true)
@@ -22,10 +27,12 @@ function getServiceFullname(svc) {
  * @service
  */
  module.exports = {
-	name: 'api',
+	name: 'apigateway',
 
 	settings: {
 		static: false,
+
+		ws: false,
 
 		port: process.env.PORT || 3000,
 
@@ -123,112 +130,6 @@ function getServiceFullname(svc) {
 			});
 		},
 
-		async routeHandler(ctx, req, res) {
-			const route = req.$route;
-			let params = {};
-
-			// CORS headers
-			if (this.settings.cors)
-				this.writeCorsHeaders(req, res);
-
-			// Rate limiter
-			if (this.settings.rateLimit && isObject(this.settings.rateLimit)) {
-				const opts = this.settings.rateLimit;
-				const store = this.settings.store;
-				const key = opts.key(req);
-
-				if (key) {
-					const remaining = opts.limit - store.inc(key);
-					if (opts.headers) {
-						res.setHeader('X-Rate-Limit-Limit', opts.limit);
-						res.setHeader('X-Rate-Limit-Remaining', Math.max(0, remaining));
-						res.setHeader('X-Rate-Limit-Reset', store.resetTime);
-					}
-					if (remaining < 0) throw new RateLimitExceeded();
-				}
-			}
-
-			const parsedQuery = this.parseQueryString(req.query);
-
-			// ToDo: Enable parameter merge options
-			if (route.regexp) {
-				const namedParams = route.regexp.match(req.url);
-				Object.assign(params, namedParams, parsedQuery);
-			}
-
-			if (route.multipart)
-				return await this.multipartHandler(req, res);
-			else
-				req.body = await route.bodyParser(req, res);
-
-			Object.assign(params, req.body);
-
-			if (route.authenticate) {
-				try {
-					await this.authenticate(ctx, req, res);
-				} catch (err) {
-					throw new UnAuthorizedError();
-				}
-			}
-			if (route.authorize) {
-				try {
-					await this.authorize(ctx, req, res);
-				} catch (err) {
-					throw new UnAuthorizedError();
-				}
-			}
-
-			return await this.callAction(ctx, req, res, params);
-		},
-
-		async callAction(ctx, req, res, params) {
-			const route = req.$route;
-			const actionName = route.action;
-
-			// onBeforeCall handling
-			if (this.settings.onBeforeCall)
-				await this.settings.onBeforeCall.call(this, ctx, req, res);
-
-			// Logging params
-			if (this.settings.logging) {
-				if (this.settings.logRequest && this.settings.logRequest in this.logger)
-					this.logger[this.settings.logRequest](`Call '${actionName}' action`);
-				if (this.settings.logRequestParams && this.settings.logRequestParams in this.logger)
-					this.logger[this.settings.logRequestParams]('Params:', params);
-			}
-
-			const opts = route.callOptions ? { ...route.callOptions } : {};
-
-			// Pass the `req` & `res` vars to ctx.meta.
-			if (route.passReqRes) {
-				if (opts.meta) {
-					opts.meta.$req = req;
-					opts.meta.$res = res;
-				} else
-					opts.meta = { $req: req, $res: res }
-			}
-
-
-			if (params && params.$params) {
-				// Transfer URL parameters via meta in case of stream
-				if (opts.meta) opts.meta.$params = params.$params;
-				else opts.meta = { $params: params.$params };
-			}
-
-			let data = await ctx.call(req.$endpoint, params, opts);
-
-			if (data instanceof Error)
-				return this.sendError(req, res, data);
-
-			// onAfterCall handling
-			if (this.settings.onAfterCall)
-				data = await this.settings.onAfterCall.call(this, ctx, req, res, data);
-
-			this.sendResponse(ctx, req, res, data);
-
-			return true;
-		},
-
     createRoutes() {
 			const processedServices = new Set();
       const services = this.broker.registry.services.list({
@@ -245,9 +146,6 @@ function getServiceFullname(svc) {
 				if (processedServices.has(serviceName))
 					continue;
 
-				if (this.settings.logRouteRegistration && this.settings.logRouteRegistration in this.logger)
-					this.logger[this.settings.logRouteRegistration]('Registering', serviceName, 'service routes');
-
 				let servicePath = service.settings.rest && service.settings.rest !== ''
 					? service.settings.rest
 					: '/' + serviceName;
@@ -258,15 +156,19 @@ function getServiceFullname(svc) {
 				let action = {}, _action;
 				for (let i = 0, keys = Object.keys(actions); i < keys.length; i++) {
 					_action = actions[keys[i]];
-					if (!_action.rest || _action.visibility === 'private')
-						continue;
+					if (_action.visibility !== 'private') {
+						action.name = _action.name;
+						action.authenticate = _action.authenticate;
+						action.authorize = _action.authorize;
 
-					action.rest = _action.rest;
-					action.name = _action.name;
-					action.authenticate = _action.authenticate;
-					action.authorize = _action.authorize;
-
-					this.createRestRoute(action, servicePath)
+						if (_action.rest) {
+							action.rest = _action.rest;
+							this.createRestRoute(action, servicePath);
+						} else if (_action.ws) {
+							action.ws = _action.ws;
+							this.createWSocketRoute(action, servicePath);
+						}
+					}
 				}
 
 				processedServices.add(serviceName);
@@ -275,11 +177,236 @@ function getServiceFullname(svc) {
 			try {
 				this.registerPreflightRoute();
 				this.register404Route();
+
+				if (this.settings.ws) {
+					this.registerWSocketRoutes();
+
+					if (this.settings.logRouteRegistration && this.settings.logRouteRegistration in this.logger) {
+						const entries = this._ws_routes.entries();
+						for (let [topic, route] of entries) {
+							this.logger[this.settings.logRouteRegistration]('Pub/Sub:', topic, '=>', route.action);
+						}
+					}
+				}
+
 				this.listenServer();
 			} catch (err) {
 				throw err;
 			}
     },
+
+		createWSocketRoute(action) {
+			const ws = action.ws;
+			if (!isObject(ws))
+				return this.logger.error('The provided ws definition in', action.name, 'is invalid.');
+
+			let topic = ws.topic || action.name.replace(/\./g, '\/');
+			topic = normalizePath(topic);
+			if (this._ws_routes.has(topic))
+				return this.logger.error('The provided ws topic in', action.name, 'has already been defined in', this._ws_routes.get(topic).action);
+
+			const route = {
+				action: action.name,
+				send: ws.send,
+				publish: ws.publish,
+				condition: ws.condition
+			};
+			this._ws_routes.set(topic, route);
+		},
+
+		registerWSocketRoutes() {
+			const wsBehaviour = {};
+			let { path, compression, idleTimeout, maxBackpressure, maxPayloadLength } = isObject(this.settings.ws) ? this.settings.ws : {};
+			compression = compression ? compression.toUpperCase() : 'SHARED_COMPRESSOR';
+
+			if (uws[compression]) wsBehaviour.compression = uws[compression];
+			if (maxBackpressure) wsBehaviour.maxBackpressure = maxBackpressure;
+			if (maxPayloadLength) wsBehaviour.maxPayloadLength = maxPayloadLength;
+			if (idleTimeout) wsBehaviour.idleTimeout = idleTimeout;
+
+			wsBehaviour.upgrade = this.wSocketUpgrade;
+			wsBehaviour.open = this.wSocketOpen;
+			wsBehaviour.message = this.wSocketMessage;
+			wsBehaviour.close = this.wSocketClose;
+
+			if (this.server) {
+				const completepath = this.createFullRoutePath(path || '/*');
+				this.server = this.server.ws(completepath, wsBehaviour);
+
+				if (this.settings.logRouteRegistration && this.settings.logRouteRegistration in this.logger)
+					this.logger[this.settings.logRouteRegistration]('WebSocket:', completepath);
+			}
+		},
+
+		async wSocketUpgrade(res, _req, context) {
+			try {
+				const protocol = _req.getHeader('sec-websocket-protocol');
+				const key = _req.getHeader('sec-websocket-key');
+				const extensions = _req.getHeader('sec-websocket-extensions');
+				let userData = {};
+				let clientIp = _req.getHeader('x-forwarded-for');
+				clientIp = (clientIp) ? clientIp : Buffer.from(res.getRemoteAddressAsText()).toString()// returns ipv6 e.g. '0000:0000:0000:0000:0000:ffff:ac11:0001'
+
+				const headers = {};
+				_req.forEach((key, value) => headers[key] = value);
+				const req = {
+					headers,
+					remoteAddress: clientIp,
+				}
+
+				res.onAborted(() => {
+					res.done = true
+				});
+
+				if (this.settings.ws.authenticate) {
+					if (!isFunction(this.authenticate))
+						return this.logger.error('Define \'authenticate\' method in the API Gateway to enable authentication.');
+
+					userData.user = await this.authenticate(req, res);
+				}
+				if (this.settings.ws.authorize) {
+					if (!isFunction(this.authorize))
+						return this.logger.error('Define \'authorize\' method in the API Gateway to enable authentication.');
+
+					userData.authz = await this.authorize(req, res);
+				}
+
+				// ALL async calls must come after the message listener, or we'll skip out on messages (e.g. resub after server restart)
+
+				if (isFunction(this.settings.ws.upgrade)) {
+					// Always return user data to be bound to the socket context or empty object
+					// Client's address is bound by default as clientAddress
+					const result = await this.settings.ws.upgrade(res, req, context);
+					Object.assign(userData, result);
+				}
+
+				if (res.done) return
+
+				userData.remoteAddress = req.remoteAddress;
+				res.upgrade(userData, key, protocol, extensions, context);
+			} catch (err) {
+				if (res.done) return
+				res.writeStatus('401').end();
+			}
+		},
+
+		async wSocketOpen(socket) {
+			const connectionContext = (socket.connectionContext = new ConnectionContext(socket));
+			let object;
+
+			if (isFunction(this.settings.ws.open)) {
+				// Always return user data to be bound to the socket context or empty object
+				// Client's address is bound by default as clientAddress
+				// Return false if there is an error
+				try {
+					object = await this.settings.ws.open(socket);
+				} catch (err) {
+					this.logger.error(err);
+				}
+			}
+
+			const entries = this._ws_routes.entries();
+			for (let [topic, route] of entries) {
+				let truthy = route.condition;
+
+				if (isFunction(route.condition))
+					truthy = route.condition(socket);
+				if (truthy !== false)
+					socket.subscribe(topic);
+			}
+
+			if (object === false)
+				return null
+			else if (object === null)
+				return null;
+			else if (!isObject(object))
+				object = {};
+
+			connectionContext.ready();
+			// Handle PING/PONG; Heartbeats
+			if (
+				this.settings.ws.keepAlive && this.settings.ws.keepAlive.ping) {
+				return keepAlive(connectionContext, this.settings.ws.keepAlive);
+			}
+		},
+
+		async wSocketMessage(socket, message, isBinary) {
+			try {
+				const { connectionContext } = socket;
+				message = Buffer.from(message);
+
+				if (this.settings.ws.keepAlive) {
+					let pong = this.settings.ws.keepAlive.pong;
+
+					if (!(pong instanceof Uint8Array))
+						this.settings.ws.keepAlive.pong = pong = new Uint8Array([pong]);
+
+					if (Buffer.compare(message, pong) === 0)
+						return keepAlive(connectionContext, this.settings.ws.keepAlive)
+				}
+
+				let route, topic;
+				try {
+					const protocol = JSON.parse(decoder.write(message));
+
+					if (isObject(protocol)) {
+						topic = protocol.topic;
+
+						if (topic) {
+							message = protocol.data;
+
+							if (this._ws_routes.has(topic))
+								route = this._ws_routes.get(topic);
+							else
+								return socket.send(new TopicNotFoundError());
+						}
+					}
+				} catch (err) {}
+
+				if (isFunction(this.settings.ws.message)) {
+					if (connectionContext.isReady)
+						message = await this.settings.ws.message(this.server, socket, message, isBinary, topic) || message;
+				}
+
+				if (route) {
+					const endpoint = this.broker.findNextActionEndpoint(route.action);
+					if (endpoint instanceof Error) {
+						if (endpoint instanceof ServiceNotFoundError)
+							throw new ServiceUnavailableError();
+
+						throw endpoint;
+					}
+
+					let result = await this.broker.call(endpoint, message, {
+						c_ctx: connectionContext // The ConnectionContext is passed to the meta object
+					});
+					if (result === undefined || result === null) return;
+
+					if (typeof(result) !== 'string' && !(result instanceof ArrayBuffer) && !ArrayBuffer.isView(result)) {
+						result = this.encodeJsonResponse(result);
+					}
+
+					if (route.send)
+						socket.send(result);
+					else if (route.publish)
+						this.server.publish(topic, result, true);
+				}
+			} catch (err) {
+				const message = err.data && err.data[0] ? err.data[0].message : '';
+				socket.send(this.encodeJsonResponse({code: err.code, type: err.type, message }));
+			}
+		},
+
+		wSocketClose(socket, code) {
+			if (!socket.connectionContext) return
+
+			socket.done = true;
+			try {
+				handleDisconnect(socket.connectionContext, { exitCode: code });
+			} catch (err) {
+				this.logger.error(err);
+			}
+		},
 
 		createRestRoute(action, servicePath) {
 			const route = {};
@@ -303,7 +430,7 @@ function getServiceFullname(svc) {
 					route.authorize = true;
 				}
 			} else
-				return this.logger.error('RouteRegistrationError! The provided rest definition in', action.name, 'is invalid.');
+				return this.logger.error('The provided rest definition in', action.name, 'is invalid.');
 
 			let method, bodyParserType, path;
 			switch(methodBpPath.length) {
@@ -325,13 +452,15 @@ function getServiceFullname(svc) {
 					break;
 			}
 
-			// Check for named parameters
-			if (path.indexOf(':') > -1) {
-				route.regexp = new PathToRegExp(servicePath + '/' + path);
-				path = route.regexp.url;
+			if (!path) {
+				path = action.name.replace(/\./g, '\/');
 			} else {
-				// If path is not defined, resolve it to the action's name
-				if (!path) path = action.name;
+				// Check for named parameters
+				if (path.indexOf(':') > -1) {
+					const namedParams = path.split(':').splice(1);
+					route.namedParams = namedParams.map((param) => removeTrailingSlashes(param))
+				}
+
 				path = servicePath + '/' + path;
 				path = normalizePath(path);
 			}
@@ -348,14 +477,14 @@ function getServiceFullname(svc) {
 			}
 
 			if (!['get', 'post', 'del', 'put', 'options', 'head'].includes(method))
-				return this.logger.error('RouteRegistrationError: Unsurpported method \'', method, '\'!');
+				return this.logger.error('Unsurpported HTTP Method \'', method, '\'!');
 
 			route.method = method;
 			route.action = action.name;
 
 			// Resolve the body parser at build time
 			if (rest.multipart || bodyParserType === 'multipart') {
-				const opts = Object.assign({}, this.settings.multipartOptions, rest.multipart);
+				const opts = Object.assign({}, this.settings.multipart, rest.multipart);
 				route.multipart = opts;
 				route.bodyParser = multipart;
 			} else if (bodyParserType)
@@ -373,7 +502,7 @@ function getServiceFullname(svc) {
 				try {
 					resolvedRoute = this.addRestRoute(route);
 				} catch (err) {
-					return this.logger.error('RouteRegistrationError!', err.name, ':', err.message);
+					return this.logger.error('RouteError!', err.name, ':', err.message);
 				}
 
 				const completepath = this.createFullRoutePath(resolvedRoute.path);
@@ -385,15 +514,23 @@ function getServiceFullname(svc) {
 				this.server = this.server[route.method](completepath, async (res, _req) => {
 					const $startTime = process.hrtime();
 					const headers = {};
+					const params = {};
 					_req.forEach((key, value) => headers[key] = value);
+					if (route.namedParams) {
+						for (let i = 0; i < route.namedParams.length; i++) {
+							const qp = _req.getParameter(i);
+							if (qp) params[route.namedParams[i]] = qp;
+						}
+					}
 					const req = {
 						$startTime,
-						url: _req.getUrl().substring(TLP_LENGTH),
+						$route: route,
+						headers,
 						method: _req.getMethod().toUpperCase(),
 						query: _req.getQuery(),
-						$route: route,
-						remoteAddress: res.getRemoteAddressAsText(),
-						headers
+						params,
+						url: _req.getUrl().substring(TLP_LENGTH),
+						remoteAddress: Buffer.from(res.getRemoteAddressAsText()).toString(),
 					}
 					this.logRequest(req);
 					res = this.patchHttpRes(res, req);
@@ -408,6 +545,9 @@ function getServiceFullname(svc) {
 						return this.sendError(req, res, err);
 					}
 				});
+
+				if (this.settings.logRouteRegistration && this.settings.logRouteRegistration in this.logger)
+					this.logger[this.settings.logRouteRegistration]('HTTP:', route.method.toUpperCase(), completepath, '=>', route.action);
 			}
 		},
 
@@ -520,6 +660,106 @@ function getServiceFullname(svc) {
 			return res;
 		},
 
+		async routeHandler(ctx, req, res) {
+			const route = req.$route;
+			route.callOptions = route.callOptions ? { ...route.callOptions } : {};
+
+			// CORS headers
+			if (this.settings.cors)
+				this.writeCorsHeaders(req, res);
+
+			// Rate limiter
+			if (this.settings.rateLimit && isObject(this.settings.rateLimit)) {
+				const opts = this.settings.rateLimit;
+				const store = this.settings.store;
+				const key = opts.key(req);
+
+				if (key) {
+					const remaining = opts.limit - store.inc(key);
+					if (opts.headers) {
+						res.setHeader('X-Rate-Limit-Limit', opts.limit);
+						res.setHeader('X-Rate-Limit-Remaining', Math.max(0, remaining));
+						res.setHeader('X-Rate-Limit-Reset', store.resetTime);
+					}
+					if (remaining < 0) throw new RateLimitExceeded();
+				}
+			}
+
+			if (route.authenticate) {
+				try {
+					route.callOptions.user = await this.authenticate(req, res);
+				} catch (err) {
+					throw new UnAuthorizedError();
+				}
+			}
+			if (route.authorize) {
+				try {
+					route.callOptions.authz = await this.authorize(req, res);
+				} catch (err) {
+					throw new UnAuthorizedError();
+				}
+			}
+
+			if (route.multipart)
+				return await this.multipartHandler(req, res);
+			else
+				req.body = await route.bodyParser(req, res);
+
+			let params = req.params;
+			const parsedQuery = this.parseQueryString(req.query);
+			Object.assign(params, parsedQuery, req.body);
+
+			return await this.callAction(ctx, req, res, params);
+		},
+
+		async callAction(ctx, req, res, params) {
+			const route = req.$route;
+			const actionName = route.action;
+
+			// onBeforeCall handling
+			if (this.settings.onBeforeCall)
+				await this.settings.onBeforeCall.call(this, ctx, req, res);
+
+			// Logging params
+			if (this.settings.logging) {
+				if (this.settings.logRequest && this.settings.logRequest in this.logger)
+					this.logger[this.settings.logRequest](`Call '${actionName}' action`);
+				if (this.settings.logRequestParams && this.settings.logRequestParams in this.logger)
+					this.logger[this.settings.logRequestParams]('Params:', params);
+			}
+
+			const opts = route.callOptions;
+
+			// Pass the `req` & `res` vars to ctx.meta.
+			if (route.passReqRes) {
+				if (opts.meta) {
+					opts.meta.$req = req;
+					opts.meta.$res = res;
+				} else
+					opts.meta = { $req: req, $res: res }
+			}
+
+
+			if (params && params.$params) {
+				// Transfer URL parameters via meta in case of stream
+				if (opts.meta) opts.meta.$params = params.$params;
+				else opts.meta = { $params: params.$params };
+			}
+
+			let data = await ctx.call(req.$endpoint, params, opts);
+
+			if (data instanceof Error)
+				return this.sendError(req, res, data);
+
+			// onAfterCall handling
+			if (this.settings.onAfterCall)
+				data = await this.settings.onAfterCall.call(this, ctx, req, res, data);
+
+			this.sendResponse(ctx, req, res, data);
+
+			return true;
+		},
+
 		writeCorsHeaders(req, res, isPreFlight) {
 			const origin = req.headers['origin'];
 			if (!origin) return;
@@ -577,20 +817,23 @@ function getServiceFullname(svc) {
 			const multipartOptions = route.multipart;
 			const result = await route.bodyParser(req, res, multipartOptions);
 			const { fields, files } = result;
-			const numOfFiles = files.length > 0;
+			const numOfFiles = files.length;
 
 			// Add limit event handlers
-			if (result.fileSizeLimitExceeded && isFunction(multipartOptions.onFileSizeLimit))
-				multipartOptions.onFileSizeLimit.call(this.service, file, result);
-			if (result.partsLimitExceeded && isFunction(multipartOptions.onPartsLimit))
-				multipartOptions.onPartsLimit.call(this.service, result, this, this.service);
-			if (result.filesLimitExceeded && isFunction(multipartOptions.onFilesLimit))
-				multipartOptions.onFilesLimit.call(this.service, result, this, this.service);
-			if (result.fieldsLimitExceeded && isFunction(multipartOptions.onFieldsLimit))
-				multipartOptions.onFieldsLimit.call(this.service, result, this, this.service);
+			if (result.fileSizeLimitExceeded && isFunction(multipartOptions.onFileSizeLimit)) {
+				for (let i = 0; i < numOfFiles; i++) {
+					multipartOptions.onFileSizeLimit.call(this.service, files[i].size, multipartOptions.fileSize);
+				}
+			}
 
-			if (multipartOptions.empty === false && numOfFiles == 0)
-				throw new MoleculerClientError('File missing in the request');
+			if (result.filesLimitExceeded && isFunction(multipartOptions.onFilesLimit))
+				multipartOptions.onFilesLimit.call(this.service, numOfFiles, multipartOptions.files);
+
+			if (result.fieldsLimitExceeded && isFunction(multipartOptions.onFieldsLimit))
+				multipartOptions.onFieldsLimit.call(this.service, fields.length, multipartOptions.fields);
+
+			if (multipartOptions.empty === false && numOfFiles === 0)
+				throw new MoleculerClientError('File missing in the request!');
 
 			ctx.meta.$multipart = fields;
 
@@ -781,15 +1024,13 @@ function getServiceFullname(svc) {
 		}
 
 		this._routes = {};
-
+		this._ws_routes = new Map();
 		this.logger.info('API Gateway Server created.');
 	},
 
 	stopped() {
 		if (this.server && this.server.listening)
 			uws.us_listen_socket_close(this.server.listenSocket);
-
-		return Promise.resolve();
 	},
 
 	Errors,

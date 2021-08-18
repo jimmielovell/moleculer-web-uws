@@ -69,10 +69,18 @@ class ServiceUnavailableError extends MoleculerError {
 		super('Service unavailable', 503, type, data);
 	}
 }
+
 // Service unavailable HTTP error
 class RangeNotSatisfiableError extends MoleculerError {
 	constructor(type, data) {
 		super('Range Not Satisfiable', 416, type, data);
+	}
+}
+
+// Topic not found WebSocket error
+class TopicNotFoundError extends MoleculerError {
+	constructor(type, data) {
+		super('Topic Not Found', 416, type, data);
 	}
 }
 
@@ -86,5 +94,6 @@ module.exports = {
 	PayloadTooLarge,
 	RateLimitExceeded,
 	ServiceUnavailableError,
-	RangeNotSatisfiableError
+	RangeNotSatisfiableError,
+	TopicNotFoundError
 };

@@ -1,6 +1,5 @@
 'use strict';
 
-const fresh	= require('./fresh');
 const etag	= require('etag');
 const { BadRequestError, ERR_UNABLE_DECODE_PARAM } = require('./errors');
 
