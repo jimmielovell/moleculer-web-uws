@@ -1,6 +1,6 @@
 {
   "name": "moleculer-web-uws",
-  "version": "0.0.2",
+  "version": "0.0.5",
   "description": "The `moleculer-web-uws` is a fast API gateway service for Moleculer based on µWebSockets.js server. Use it to publish your services over HTTP and WebSockets.",
   "main": "index.js",
   "keywords": [
