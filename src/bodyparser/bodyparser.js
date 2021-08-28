@@ -3,7 +3,16 @@
 const Readable = require('stream').Readable;
 
 function urlencoded(buffer) {
-  return buffer.toString();
+  const parsed = {};
+  const encoded = buffer.toString();
+  const pairs = encoded.split('&');
+
+  for (let i = 0, len = pairs.length; i < len; i++) {
+    let k = pairs[i].split('=');
+    parsed[k[0]] = k[1];
+  }
+
+  return parsed;
 }
 
 function json(buffer) {
