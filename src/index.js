@@ -707,7 +707,15 @@ function getServiceFullname(svc) {
 
 			let params = req.params;
 			const parsedQuery = this.parseQueryString(req.query);
-			Object.assign(params, parsedQuery, req.body);
+
+			if (req.body && !isObject(req.body)) {
+				if (Object.keys(params).length === 0 && Object.keys(parsedQuery).length === 0)
+					params = req.body;
+				else
+					Object.assign(params, parsedQuery, { 0: req.body });
+			} else {
+				Object.assign(params, parsedQuery, req.body);
+			}
 
 			return await this.callAction(ctx, req, res, params);
 		},

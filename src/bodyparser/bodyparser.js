@@ -4,8 +4,13 @@ const Readable = require('stream').Readable;
 
 function urlencoded(buffer) {
   const parsed = {};
-  const encoded = buffer.toString();
-  const pairs = encoded.split('&');
+  let decoded = buffer.toString();
+
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch(err) {}
+
+  const pairs = decoded.split('&');
 
   for (let i = 0, len = pairs.length; i < len; i++) {
     let k = pairs[i].split('=');
