@@ -24,7 +24,7 @@ class InvalidResponseTypeError extends MoleculerError {
 // Unauthorized HTTP error
 class UnAuthorizedError extends MoleculerError {
 	constructor(type, data) {
-		super('Unauthorized', 401, type || ERR_INVALID_TOKEN, data);
+		super('Unauthorized', 401, type, data);
 	}
 }
 

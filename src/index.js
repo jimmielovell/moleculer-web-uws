@@ -1,7 +1,7 @@
 const uws = require('uWebSockets.js');
 const { MoleculerError, MoleculerServerError, MoleculerClientError, ServiceNotFoundError } = require('moleculer').Errors;
-const { ServiceUnavailableError, NotFoundError, ForbiddenError, RateLimitExceeded, UnAuthorizedError, TopicNotFoundError } = Errors = require('./errors');
-const { autoParser, bodyParser } = require('./bodyparser/bodyparser');
+const { ServiceUnavailableError, NotFoundError, ForbiddenError, RateLimitExceeded, TopicNotFoundError } = Errors = require('./errors');
+const bodyParser = require('./bodyparser/bodyparser');
 const multipart = require('./bodyparser/multipart');
 const StaticServer = require('./staticserver');
 const ConnectionContext = require('./websocket/ConnectionContext');
@@ -63,7 +63,7 @@ function getServiceFullname(svc) {
 
 	metadata: {
 		$category: 'gateway',
-		$description: 'uWs API Gateway service',
+		$description: 'MoleculerJs API Gateway service',
 	},
 
 	actions: {
@@ -78,8 +78,10 @@ function getServiceFullname(svc) {
 				},
 				spanName: ctx => `${ctx.params.req.method} ${ctx.params.req.url}`
 			},
+
 			timeout: 0,
-			handler(ctx) {
+
+			async handler(ctx) {
 				const req = ctx.params.req;
 				const res = ctx.params.res;
 				const route = req.$route;
@@ -97,7 +99,7 @@ function getServiceFullname(svc) {
 				if (requestID)
 					res.setHeader('X-Request-Id', ctx.requestID);
 
-				return this.routeHandler(ctx, req, res);
+				return await this.routeHandler(ctx, req, res);
 			}
 		},
 	},
@@ -419,14 +421,15 @@ function getServiceFullname(svc) {
 				methodBpPath = rest.path || '';
 				methodBpPath = methodBpPath.split(' ');
 				route.passReqRes = rest.passReqRes;
+				route.cors = rest.cors;
 				if (rest.authenticate) {
-					if (!isFunction(this.authenticate))
+					if (!isFunction(this.actions.authenticate))
 						this.logger.error('Define \'authenticate\' method in the API Gateway to enable authentication.');
 					route.authenticate = true;
 				}
 				if (rest.authorize) {
-					if (!isFunction(this.authorize))
-						this.logger.error('Define \'authorize\' method in the API Gateway to enable authentication.');
+					if (!isFunction(this.actions.authorize))
+						this.logger.error('Define \'authorize\' method in the API Gateway to enable authorization.');
 					route.authorize = true;
 				}
 			} else
@@ -486,11 +489,11 @@ function getServiceFullname(svc) {
 			if (rest.multipart || bodyParserType === 'multipart') {
 				const opts = Object.assign({}, this.settings.multipart, rest.multipart);
 				route.multipart = opts;
-				route.bodyParser = multipart;
+				route.bodyParser = 'multipart';
 			} else if (bodyParserType)
-				route.bodyParser = bodyParser[bodyParserType];
+				route.bodyParser = bodyParserType;
 			else
-				route.bodyParser = autoParser;
+				route.bodyParser = 'any';
 
 			this.registerRestRoute(route);
 		},
@@ -536,12 +539,19 @@ function getServiceFullname(svc) {
 					res = this.patchHttpRes(res, req);
 
 					try {
+						// CORS headers
+						if (this.settings.cors) {
+							if (route.cors) Object.assign(this.settings.cors, route.cors);
+
+							this.writeCorsHeaders(req, res);
+						}
+
 						await this.actions.rest({ req, res });
-						// if (!res.done) throw new Error();
 					} catch (err) {
 						// Clientside error logging
 						if (this.settings.log4XXResponses && 400 < err.code && err.code < 500)
 							this.logger.error('Request error!', err.name, ':', err.message, '\n', err.stack, '\nData:', err.data);
+
 						return this.sendError(req, res, err);
 					}
 				});
@@ -556,7 +566,7 @@ function getServiceFullname(svc) {
 
 			if (this._routes[method]) {
 				if (this._routes[method][path])
-					return this.logger.error('RouteRegistrationError:', method.toUpperCase(),' ', path, ' already exists');
+					return this.logger.error('RouteError:', method.toUpperCase(),' ', path, ' already exists');
 				else
 					this._routes[method][path] = route;
 			} else {
@@ -594,7 +604,6 @@ function getServiceFullname(svc) {
 					}
 				}
 				this.logRequest(req);
-
 				res = this.patchHttpRes(res, req);
 
 				try {
@@ -631,7 +640,7 @@ function getServiceFullname(svc) {
 		},
 
 		patchHttpRes(res, req) {
-			res.onAborted(() => res.done = true)
+			res.onAborted(() => { res.done = true });
 			res.statusCode = 200;
 			res._headers = new Map();
 			res.setHeader = (key, value) => {
@@ -664,10 +673,6 @@ function getServiceFullname(svc) {
 			const route = req.$route;
 			route.callOptions = route.callOptions ? { ...route.callOptions } : {};
 
-			// CORS headers
-			if (this.settings.cors)
-				this.writeCorsHeaders(req, res);
-
 			// Rate limiter
 			if (this.settings.rateLimit && isObject(this.settings.rateLimit)) {
 				const opts = this.settings.rateLimit;
@@ -685,36 +690,26 @@ function getServiceFullname(svc) {
 				}
 			}
 
-			if (route.authenticate) {
-				try {
-					route.callOptions.user = await this.authenticate(req, res);
-				} catch (err) {
-					throw new UnAuthorizedError();
-				}
-			}
-			if (route.authorize) {
-				try {
-					route.callOptions.authz = await this.authorize(req, res);
-				} catch (err) {
-					throw new UnAuthorizedError();
-				}
-			}
+			req.query = this.parseQueryString(req.query);
+
+			if (route.authenticate)
+				ctx.meta.auth = await this.actions.authenticate({ req, res });
+			if (route.authorize)
+				ctx.meta.authz = await this.actions.authorize({ req, res });
 
 			if (route.multipart)
-				return await this.multipartHandler(req, res);
-			else
-				req.body = await route.bodyParser(req, res);
+				return await this.multipartHandler(ctx, req, res);
 
+			let body = await bodyParser(route.bodyParser, req, res);
 			let params = req.params;
-			const parsedQuery = this.parseQueryString(req.query);
 
-			if (req.body && !isObject(req.body)) {
-				if (Object.keys(params).length === 0 && Object.keys(parsedQuery).length === 0)
-					params = req.body;
+			if (body && !isObject(body)) {
+				if (Object.keys(params).length === 0 && Object.keys(req.query).length === 0)
+					params = body;
 				else
-					Object.assign(params, parsedQuery, { 0: req.body });
+					Object.assign(params, req.query, { 0: body });
 			} else {
-				Object.assign(params, parsedQuery, req.body);
+				Object.assign(params, req.query, body);
 			}
 
 			return await this.callAction(ctx, req, res, params);
@@ -736,25 +731,19 @@ function getServiceFullname(svc) {
 					this.logger[this.settings.logRequestParams]('Params:', params);
 			}
 
-			const opts = route.callOptions;
+			Object.assign(ctx.meta, route.callOptions);
 
 			// Pass the `req` & `res` vars to ctx.meta.
 			if (route.passReqRes) {
-				if (opts.meta) {
-					opts.meta.$req = req;
-					opts.meta.$res = res;
-				} else
-					opts.meta = { $req: req, $res: res }
+				ctx.meta.$req = req;
+				ctx.meta.$res = res;
 			}
 
+			// Transfer URL parameters via meta in case of stream
+			if (params && params.$params)
+				ctx.meta.$params = params.$params;
 
-			if (params && params.$params) {
-				// Transfer URL parameters via meta in case of stream
-				if (opts.meta) opts.meta.$params = params.$params;
-				else opts.meta = { $params: params.$params };
-			}
-
-			let data = await ctx.call(req.$endpoint, params, opts);
+			let data = await ctx.call(req.$endpoint, params);
 
 			if (data instanceof Error)
 				return this.sendError(req, res, data);
@@ -770,13 +759,11 @@ function getServiceFullname(svc) {
 
 		writeCorsHeaders(req, res, isPreFlight) {
 			const origin = req.headers['origin'];
-			if (!origin) return;
-
 			const cors = this.settings.cors;
 			// Access-control-allow-origin
-			if (!cors.origin || cors.origin === '*')
+			if (!cors.origin || cors.origin === '*' || (Array.isArray(cors.origin) && cors.origin.includes('*')))
 				res.setHeader('Access-Control-Allow-Origin',  '*');
-			else if (this.checkOrigin(origin, cors.origin)) {
+			else if (origin && this.checkOrigin(origin, cors.origin)) {
 				res.setHeader('Access-Control-Allow-Origin', origin);
 				res.setHeader('Vary', 'Origin');
 			} else
@@ -819,11 +806,10 @@ function getServiceFullname(svc) {
 			}
 		},
 
-		async multipartHandler(req, res) {
-			const ctx = req.$ctx;
+		async multipartHandler(ctx, req, res) {
 			const route = req.$route;
 			const multipartOptions = route.multipart;
-			const result = await route.bodyParser(req, res, multipartOptions);
+			const result = await multipart(req, res, multipartOptions);
 			const { fields, files } = result;
 			const numOfFiles = files.length;
 
@@ -845,14 +831,7 @@ function getServiceFullname(svc) {
 
 			ctx.meta.$multipart = fields;
 
-			let data = await ctx.call(req.$endpoint, files.length > 1 ? files : files[0], {
-				meta: { $multipart: fields }
-			});
-
-			if (route.onAfterCall)
-				data = await route.onAfterCall.call(this, ctx, this.route, req, res, data);
-
-			this.sendResponse(req, res, data, {});
+			return await this.callAction(ctx, req, res, files.length > 1 ? files : files[0]);
 		},
 
 		encodeJsonResponse(data) {
@@ -1006,6 +985,10 @@ function getServiceFullname(svc) {
 					const wildcard = new RegExp(`^${settings.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&').replace(/\\\*/g, '.*').replace(/\\\?/g, '.')}$`);
 					return origin.match(wildcard);
 				}
+			} else if (Array.isArray(settings)) {
+				for (let i = 0, len = settings.length; i < len; i++) {
+					if (this.checkOrigin(origin, settings[i])) return true;
+				}
 			}
 
 			return false;
@@ -1013,8 +996,10 @@ function getServiceFullname(svc) {
 	},
 
 	events: {
-		'$services.changed'() {
-			// ToDO: Rebuild and Reregister all the routes automatically
+		'$services.changed'(...args) {
+			// Clear routes and rebuild them
+			// this._routes = {};
+			// this.createRoutes();
 		},
 
     '$broker.started'() {
