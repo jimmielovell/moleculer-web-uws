@@ -135,9 +135,64 @@ The `route-path` is the value passed to rest parameter in the schema settings ob
 if no value is passed, the service-name is resolved to the specified name
 of your service. This is to avoid any collisions with other service's routes.
 
+### CORS
+
+You can use CORS headers in the api gateway service
+
+```js
+broker.createService({
+    name: 'apigateway',
+
+    mixins: [APIGateway],
+
+    settings: {
+        // Global CORS settings for all routes
+        cors: {
+            // Configures the Access-Control-Allow-Origin CORS header.
+            origin: '*', // Can be an array of origins
+            // Configures the Access-Control-Allow-Methods CORS header.
+            methods: ['GET', 'OPTIONS', 'POST', 'PUT', 'DELETE'],
+            // Configures the Access-Control-Allow-Headers CORS header.
+            allowedHeaders: [],
+            // Configures the Access-Control-Expose-Headers CORS header.
+            exposedHeaders: [],
+            // Configures the Access-Control-Allow-Credentials CORS header.
+            credentials: false,
+            // Configures the Access-Control-Max-Age CORS header.
+            maxAge: 3600
+        },
+    }
+});
+```
+
+You can also use Route specific CORS settings (overwrites global settings)
+
+```js
+broker.createService({
+    name: 'test',
+
+    actions: {
+        hello: {
+            rest: {
+                path: '/routewithcors',
+                cors: {
+                    origin: ['http://localhost:3000', 'https://localhost:4000'],
+                    methods: ['GET'],
+                    credentials: true
+                },
+            },
+
+            handler(ctx) {
+                ...
+            }
+        }
+    }
+});
+```
+
 ### Body-Parser
 
-The Api Gateway implements json, urlencoded, text and multipart (File Uploading) by default.
+The Api Gateway implements `json`, `urlencoded`, `text` and `multipart` (File Uploading) by default.
 Only one of these can be used per route. To use a body-parser, you must add it to the rest definition.
 
 ```js
@@ -203,9 +258,147 @@ broker.createService({
 });
 ```
 
+### Authorization
+
+To implement authorization. Do 2 things to enable it.
+
+1. Set `authorize: true` in your routes
+2. Define the `authorize` action in the api gateway service.
+
+The returned value will be set to the `ctx.meta.authz` property. You can use it in your actions to get the authorized user entity.
+
+```js
+broker.createService({
+    name: 'test',
+
+    actions: {
+        hello: {
+            rest: {
+                path: 'GET /hello',
+
+                // First thing
+                authorize: true
+            },
+
+            handler(ctx) {
+                const { id, username, name } = ctx.meta.authz;
+                ...
+            }
+        }
+    }
+});
+```
+
+```js
+let ApiGateway = require('moleculer-web-uws');
+const { UnAuthorisedError } = require('moleculer-web').Errors;
+
+broker.createService({
+    name: 'apigateway',
+
+    mixins: [APIGateway],
+
+    settings: {
+        ...
+    },
+
+    actions: {
+        // Second thing
+        async authorize(ctx) {
+            const { req, res } = ctx.params;
+            // Define your authorization logic, like calling an auth service like so
+            let tokenId;
+
+            if (req.headers.authorization) {
+                const parts = req.headers.authorization.split(' ');
+                if (parts[0]/** type */ === 'Bearer') tokenId = parts[1];
+            }
+
+            if (tokenId === '12345') {
+                // Ensure that that you return every information you might need later in
+                // your service's action so that you can access them as ctx.meta.authz
+                return { id: 1, username: 'john.doe', name: 'John Doe' };
+            }
+
+            throw new UnAuthorizedError('Token Id not detected');
+        }
+    }
+});
+```
+
+> Please note that the module will not throw an UnAuthorizedError on your behalf. You have to throw it yourself if authorization fails.
+
+### Authentication
+
+To enable authentication, you need to do something similar to what is describe in the Authorization paragraph. Also in this case you have to:
+
+1. Set authenticate: true in your routes
+2. Define your custom `authenticate` action in the api gateway service
+
+The returned value will be set to the `ctx.meta.auth` property. You can use it in your actions to get the logged in user entity.
+
+```js
+broker.createService({
+    name: 'test',
+
+    actions: {
+        hello: {
+            rest: {
+                path: 'GET /hello',
+
+                // First thing
+                authenticate: true
+            },
+
+            handler(ctx) {
+                const { id, username, name } = ctx.meta.auth;
+                ...
+            }
+        }
+    }
+});
+```
+
+#### Example
+
+```js
+let ApiGateway = require('moleculer-web-uws');
+
+broker.createService({
+    name: 'apigateway',
+
+    mixins: [APIGateway],
+
+    settings: {
+        ...
+    },
+
+    actions: {
+        // Second thing
+        async authentication(ctx) {
+            const { req, res } = ctx.params;
+            let accessToken = req.query['access_token'];
+
+            if (accessToken) {
+                if (accessToken === '12345') {
+                    // valid credentials. It will be set to `ctx.meta.auth`
+                    return { id: 1, username: 'john.doe', name: 'John Doe' };
+                }
+
+                // invalid credentials
+                throw new Error('Could not login user!');
+            } else {
+                // anonymous user
+                return null;
+            }
+        }
+    }
+});
+```
+
 ### File Uploading
 
-To upload a file(s), use the `mulitpart` property and no other body-parser should should be defined on the same action.
+To upload a file(s), use the `multipart` property and no other body-parser should should be defined on the same action.
 
 ```js
 broker.createService({
@@ -217,7 +410,7 @@ broker.createService({
                 path: 'POST /upload',
 
                 multipart: {
-                    fileSize: 100000, // Size in bytes, that should not be exceeded
+                    fileSize: 100000, // Size in bytes that should not be exceeded
 
                     files: 1, // Number of files expected
 
@@ -259,6 +452,8 @@ broker.createService({
 A global multipart options can be defined in the API Gateway as follows.
 
 ```js
+let ApiGateway = require('moleculer-web-uws');
+
 broker.createService({
     name: 'apigateway',
 
@@ -311,6 +506,8 @@ broker.createService({
 To access static files, define static settings in the API Gateway.
 
 ```js
+let ApiGateway = require('moleculer-web-uws');
+
 broker.createService({
     name: 'apigateway',
 
@@ -353,6 +550,8 @@ be whitelisted to be accessed through the API Gateway.
 To use WebSockets, `ws` setting must be defined in the API Gateway as follows.
 
 ```js
+let ApiGateway = require('moleculer-web-uws');
+
 broker.createService({
   name: 'apigateway',
 
